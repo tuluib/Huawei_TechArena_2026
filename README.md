@@ -20,7 +20,7 @@ temperature). Score = 80 x macro-F1 over 10-second windows + 20 for speed (singl
 | `src/package_submission.py` | Edge-case tests + builds `submission.zip` in the project root. |
 | `signal_processing/` | Exploration: cleaning and feature research, figures, feature evaluation. |
 | `submissions/` | Every uploaded zip with its leaderboard score. |
-| `data/` | Training recordings (not in git). |
+| `data/` | Training recordings (`data/_cache/` holds generated feature caches and is not in git). |
 
 ## Setup
 
