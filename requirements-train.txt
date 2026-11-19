@@ -1,3 +1,5 @@
 # Extra packages for training and the local harness (not needed at evaluation time)
 skl2onnx~=1.20.0
 matplotlib  # signal_processing/explore.py only
+lightgbm~=4.7.0      # V4 training (exported to ONNX; not needed at evaluation time)
+onnxmltools~=1.16.0  # LightGBM -> ONNX

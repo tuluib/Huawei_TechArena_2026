@@ -70,8 +70,16 @@ LAG_BASES = ["hr_mean_local", "eda_tonic_local", "bvp_log_rms_local", "scr_rate_
              "temp_slope_60s", "bvp_artifact_frac", "hr_mean_rel"]
 LAGS = (-18, -12, -6, -3, 3, 6, 12, 18)
 LAG_FEATURES = [f"{b}_lag{L}" for L in LAGS for b in LAG_BASES]
+# v4: pulse regularity / noise, skin-response size, heart rate against its recent extremes,
+# and past-vs-future trends (onsets and ends of tasks).
+EXTRA_FEATURES = ["bvp_periodicity", "bvp_vhf", "bvp_entropy", "scr_amp_60s", "scr_rate_30s", "scr_rate_120s",
+                  "hr_vs_min3m", "hr_vs_runmax", "hr_vs_runmin", "eda_vs_min3m", "temp_vs_max3m"]
+TREND_BASES = ["hr_mean", "eda_tonic", "scr_rate_60s", "temp_mean", "bvp_log_rms", "bvp_artifact_frac",
+               "bvp_periodicity", "ibi_mean"]
+TREND_FEATURES = [f"{b}_{s}" for b in TREND_BASES for s in ("d1m", "d3m", "vs_past3m", "vs_fut3m")]
+REC2_FEATURES = [f"rec_{b}_q{q}" for b in ("bvp_periodicity", "bvp_vhf", "scr_rate_60s") for q in (10, 50, 90)]
 ALL_FEATURES = (WINDOW_FEATURES + CONTEXT_FEATURES + RELATIVE_FEATURES + LONG_FEATURES
-                + REC_FEATURES + TIME_FEATURES + LAG_FEATURES)
+                + REC_FEATURES + TIME_FEATURES + LAG_FEATURES + EXTRA_FEATURES + TREND_FEATURES + REC2_FEATURES)
 INPUT_COLS = ["BVP", "EDA", "HR", "IBI_dt", "IBI_duration", "Temperature"]
 
 
@@ -168,7 +176,7 @@ def _window_stats(t, x, n):
     return cnt, mean, np.sqrt(np.maximum(var, 0.0)), slope
 
 
-def _bvp_spectral(t, x, n):
+def _bvp_spectral(t, x, n, raw=None):
     per_win = int(WINDOW_S * FS_BVP)
     ok = ~np.isnan(x)
     w = _wid(t[ok])
@@ -184,10 +192,23 @@ def _bvp_spectral(t, x, n):
     pulse_bpm = freqs[band][band_power.argmax(axis=1)] * 60.0
     peak_ratio = band_power.max(axis=1) / band_power.sum(axis=1)
     log_rms = np.log1p(np.sqrt((mat ** 2).sum(axis=1) / np.maximum(cnt, 1)))
+    # pulse regularity: autocorrelation peak at 0.3-1.5 s lags (low when movement corrupts the pulse)
+    ac = np.fft.irfft(power, axis=1)
+    lo, hi = int(0.3 * FS_BVP), int(1.5 * FS_BVP)
+    periodicity = ac[:, lo:hi].max(axis=1) / np.maximum(ac[:, 0], 1e-12)
+    pn = band_power / np.maximum(band_power.sum(axis=1, keepdims=True), 1e-12)
+    entropy = -(pn * np.log(pn + 1e-12)).sum(axis=1)
+    vhf = np.full(n, np.nan)
+    if raw is not None:  # share of raw (unfiltered) power above 8 Hz: movement, not pulse
+        rmat = np.zeros((n, per_win))
+        rmat[w[keep], pos[keep]] = raw[ok][keep]
+        rmat -= rmat.sum(axis=1, keepdims=True) / np.maximum(cnt, 1)[:, None]
+        rp = np.abs(np.fft.rfft(rmat, axis=1)) ** 2
+        vhf = np.log(rp[:, freqs > 8.0].sum(axis=1) / np.maximum(rp[:, freqs >= 0.5].sum(axis=1), 1e-12) + 1e-9)
     empty = cnt < per_win // 2
-    for a in (pulse_bpm, peak_ratio, log_rms):
+    for a in (pulse_bpm, peak_ratio, log_rms, periodicity, entropy, vhf):
         a[empty] = np.nan
-    return pulse_bpm, peak_ratio, log_rms
+    return pulse_bpm, peak_ratio, log_rms, periodicity, entropy, vhf
 
 
 def _same(a, k):
@@ -208,6 +229,24 @@ def _nan_roll_mean(a, k):
     s = _same(np.where(ok, a, 0.0), k)
     c = _same(ok.astype(np.float64), k)
     return np.where(c > 0, s / np.maximum(c, 1), np.nan)
+
+
+def _offset_mean(a, lo, hi):
+    """Mean of a[i+lo .. i+hi] (inclusive offsets, clipped to the input), NaN ignored."""
+    ok = np.isfinite(a)
+    cs = np.r_[0.0, np.cumsum(np.where(ok, a, 0.0))]
+    cc = np.r_[0.0, np.cumsum(ok)]
+    i = np.arange(len(a))
+    s = np.clip(i + lo, 0, len(a))
+    e = np.clip(i + hi + 1, 0, len(a))
+    c = cc[e] - cc[s]
+    return np.where(c > 0, (cs[e] - cs[s]) / np.maximum(c, 1), np.nan)
+
+
+def _past_extreme(a, k, fn):
+    """Rolling min/max over the current and k-1 previous windows, NaN ignored."""
+    r = pd.Series(a).rolling(k, min_periods=1)
+    return (r.min() if fn == "min" else r.max()).to_numpy()
 
 
 def _relative(a):
@@ -253,6 +292,7 @@ def compute_features(df: pd.DataFrame):
 
     # ---- cleaning
     bx = np.clip(bx, -1e5, 1e5)
+    bx_raw = bx
     bx = _filtfilt_segments(bt, bx, SOS_BVP, drop_short=True, one_pass=True)
     bvp_art = _bvp_artifacts(bt, bx)
     ex = np.where(ex < EDA_MIN, np.nan, ex)
@@ -267,14 +307,17 @@ def compute_features(df: pd.DataFrame):
     consecutive = np.abs(ibi_dt - ix_raw) < 0.05
 
     scr_t = np.empty(0)
+    scr_amp = np.empty(0)
     if len(phasic) > 4 and np.isfinite(phasic).any():
         min_rise = max(0.02, 0.005 * float(np.nanmedian(ex)))
-        peaks, _ = signal.find_peaks(np.nan_to_num(phasic), prominence=min_rise, distance=int(FS_EDA))
+        peaks, props = signal.find_peaks(np.nan_to_num(phasic), prominence=min_rise, distance=int(FS_EDA))
         scr_t = et[peaks]
+        scr_amp = props["prominences"]
 
     # ---- window features
     f = {}
-    f["bvp_pulse_bpm"], f["bvp_peak_ratio"], f["bvp_log_rms"] = _bvp_spectral(bt, bx, n)
+    (f["bvp_pulse_bpm"], f["bvp_peak_ratio"], f["bvp_log_rms"], f["bvp_periodicity"], f["bvp_entropy"],
+     f["bvp_vhf"]) = _bvp_spectral(bt, bx, n, bx_raw)
     aw = _wid(bt)
     f["bvp_artifact_frac"] = (np.bincount(aw, bvp_art.astype(float), n)[:n]
                               / np.maximum(np.bincount(aw, minlength=n)[:n], 1))
@@ -308,6 +351,9 @@ def compute_features(df: pd.DataFrame):
 
     scr = np.bincount(_wid(scr_t), minlength=n)[:n].astype(np.float64)
     f["scr_rate_60s"] = _roll_sum(scr, CONTEXT_WINDOWS)
+    f["scr_rate_30s"] = _roll_sum(scr, 3)
+    f["scr_rate_120s"] = _roll_sum(scr, 12)
+    f["scr_amp_60s"] = _roll_sum(np.bincount(_wid(scr_t), scr_amp, minlength=n)[:n], CONTEXT_WINDOWS)
     temp_ctx = _nan_roll_mean(f["temp_mean"], CONTEXT_WINDOWS)
     eda_ctx = _nan_roll_mean(f["eda_tonic"], CONTEXT_WINDOWS)
     if n > 1:
@@ -335,6 +381,22 @@ def compute_features(df: pd.DataFrame):
     f["t_frac"] = centre / max(dur, 1.0)
     f["t_left"] = dur - centre
 
+    hr = f["hr_mean"]
+    f["hr_vs_min3m"] = hr - _past_extreme(hr, 18, "min")
+    f["hr_vs_runmax"] = hr - np.fmax.accumulate(np.where(np.isfinite(hr), hr, -np.inf))
+    f["hr_vs_runmin"] = hr - np.fmin.accumulate(np.where(np.isfinite(hr), hr, np.inf))
+    f["eda_vs_min3m"] = f["eda_tonic"] - _past_extreme(f["eda_tonic"], 18, "min")
+    f["temp_vs_max3m"] = f["temp_mean"] - _past_extreme(f["temp_mean"], 18, "max")
+    for b in TREND_BASES:
+        a = f[b]
+        p1, n1 = _offset_mean(a, -6, -1), _offset_mean(a, 1, 6)
+        p3, n3 = _offset_mean(a, -18, -1), _offset_mean(a, 1, 18)
+        f[f"{b}_d1m"], f[f"{b}_d3m"] = n1 - p1, n3 - p3
+        f[f"{b}_vs_past3m"], f[f"{b}_vs_fut3m"] = a - p3, a - n3
+    for b in ("bvp_periodicity", "bvp_vhf", "scr_rate_60s"):
+        for q, v in zip((10, 50, 90), _qs(f[b], [10, 50, 90])):
+            f[f"rec_{b}_q{q}"] = np.full(n, v)
+
     for L in LAGS:  # value of window i+L (NaN past the ends)
         for b in LAG_BASES:
             a = np.full(n, np.nan)
@@ -357,6 +419,35 @@ def smooth_probs(P: np.ndarray, k: int) -> np.ndarray:
     return np.column_stack([_same(P[:, c], k) / norm for c in range(P.shape[1])])
 
 
+S2_LAGS = (-18, -12, -9, -6, -4, -2, -1, 1, 2, 4, 6, 9, 12, 18)
+S2_WINDOWS = (3, 9, 19, 37)
+S2_SPANS = ((-6, -1), (1, 6), (-18, -1), (1, 18), (-60, -1), (1, 60))
+
+
+def stage2_features(P: np.ndarray) -> np.ndarray:
+    """Stage-2 input: the stage-1 class probabilities of the surrounding windows of the same input.
+
+    Lets the second model learn the shape of the protocol (a stress task lasts 1-4 minutes, rest
+    follows the cool-down, ...) instead of a fixed moving average. Rows must be in window order."""
+    n = len(P)
+    cols = [P]
+    for L in S2_LAGS:  # probabilities of window i+L
+        a = np.full_like(P, np.nan)
+        if 0 < L < n:
+            a[:-L] = P[L:]
+        elif 0 < -L < n:
+            a[-L:] = P[:L]
+        cols.append(a)
+    for k in S2_WINDOWS:  # centred averages
+        cols.append(smooth_probs(P, k))
+    for lo, hi in S2_SPANS:  # averages of the past / future 1, 3 and 10 minutes
+        cols.append(np.column_stack([_offset_mean(P[:, c], lo, hi) for c in range(P.shape[1])]))
+    cols.append(np.tile(P.mean(axis=0), (n, 1)))  # class mix of the whole input
+    pos = np.arange(n, dtype=np.float64)
+    cols.append(np.column_stack([np.full(n, np.log1p(n)), pos, n - 1 - pos]))
+    return np.column_stack(cols).astype(np.float32)
+
+
 # --------------------------------------------------------------------------------------------
 # Model
 # --------------------------------------------------------------------------------------------
@@ -367,17 +458,31 @@ class YourModel(ADM_Base):
         so.inter_op_num_threads = 1
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.session = ort.InferenceSession(str(onnx_file), sess_options=so, providers=["CPUExecutionProvider"])
-        self.input_name = self.session.get_inputs()[0].name
-        outs = [o.name for o in self.session.get_outputs()]
-        self.prob_name = next((o for o in outs if "prob" in o.lower()), outs[-1])
         meta = json.loads(self.session.get_modelmeta().custom_metadata_map["eh_config"])
+        ins = {i.name: i for i in self.session.get_inputs()}
+        outs = [o.name for o in self.session.get_outputs()]
+        self.two_stage = bool(meta.get("two_stage", False))
+        if self.two_stage:  # one file, two tree models: s1_* (features) and s2_* (stage-1 context)
+            self.input_name, self.input2_name = "s1_X", "s2_X"
+            self.prob_name, self.prob2_name = "s1_probabilities", "s2_probabilities"
+            self.empty1 = np.zeros((0, ins["s1_X"].shape[1]), dtype=np.float32)
+            self.empty2 = np.zeros((0, ins["s2_X"].shape[1]), dtype=np.float32)
+        else:
+            self.input_name = next(iter(ins))
+            self.prob_name = next((o for o in outs if "prob" in o.lower()), outs[-1])
         self.cols = np.array([ALL_FEATURES.index(c) for c in meta["features"]], dtype=np.int64)
         self.smooth_k = int(meta.get("smooth_k", 1))
         self.log_bias = np.asarray(meta.get("log_bias", [0.0, 0.0, 0.0]), dtype=np.float64)
 
     def predict_windows(self, df: pd.DataFrame):
         X, row_wid = compute_features(df)
-        P = self.session.run([self.prob_name], {self.input_name: np.ascontiguousarray(X[:, self.cols])})[0]
+        X = np.ascontiguousarray(X[:, self.cols])
+        if self.two_stage:
+            P = self.session.run([self.prob_name], {self.input_name: X, self.input2_name: self.empty2})[0]
+            Z = stage2_features(np.asarray(P, dtype=np.float64))
+            P = self.session.run([self.prob2_name], {self.input_name: self.empty1, self.input2_name: Z})[0]
+        else:
+            P = self.session.run([self.prob_name], {self.input_name: X})[0]
         P = smooth_probs(np.asarray(P, dtype=np.float64), self.smooth_k)
         score = np.log(np.maximum(P, 1e-9)) + self.log_bias
         return score.argmax(axis=1), row_wid
@@ -389,17 +494,17 @@ class YourModel(ADM_Base):
         data = input[INPUT_COLS]
         if not isinstance(data.index, pd.DatetimeIndex):  # no timestamps: assume 64 Hz
             data = data.set_axis(pd.date_range("2000-01-01", periods=n_rows, freq="15625us"))
-        labels = np.full(n_rows, "Rest", dtype=object)
+        cls = np.zeros(n_rows, dtype=np.int8)  # 0 = "Rest"
         with warnings.catch_warnings(), np.errstate(all="ignore"):
             warnings.simplefilter("ignore")
             for s, e in _input_segments(data.index):
                 try:
                     win_pred, row_wid = self.predict_windows(data.iloc[s:e])
-                    labels[s:e] = CLASSES[win_pred[np.clip(row_wid, 0, len(win_pred) - 1)]]
-                except Exception:
-                    pass  # never crash the scorer; this piece keeps "Rest"
+                    cls[s:e] = win_pred[np.clip(row_wid, 0, len(win_pred) - 1)]
+                except Exception:  # never crash the scorer; this piece keeps "Rest"
+                    self.fallbacks = getattr(self, "fallbacks", 0) + 1  # checked by package_submission.py
         # explicit object dtype: pandas 3 would otherwise convert 100k+ strings to Arrow (slow)
-        return pd.DataFrame({"Activity": pd.Series(labels, index=input.index, dtype=object, copy=False)})
+        return pd.DataFrame(CLASSES[cls], index=input.index, columns=["Activity"], dtype=object, copy=False)
 
 
 MAX_JUMP_NS = 300 * 10**9  # longer gaps than any inside a training recording (max 270 s)

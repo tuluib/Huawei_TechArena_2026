@@ -1,4 +1,7 @@
-"""Train a model that works whatever input length run() receives.
+"""Old (V1-V3) trainer, kept for reference. It overwrites src/your_model.onnx with a model the current
+your_model.py may not read: restore with `git checkout src/your_model.onnx`.
+
+Train a model that works whatever input length run() receives.
 
 The hidden test may call run() on pieces of a recording rather than whole recordings. Features
 such as "time since start" or "value minus the recording median" then mean something different.
@@ -20,13 +23,15 @@ import numpy as np
 import pandas as pd
 
 sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))  # src/
 import train_v2 as T
 import your_model as ym
 from eval_harness import VAL_SUBJECTS
 
 CACHE = T.DATA / "_cache" / "robust_features.parquet"
 CHUNK_MINUTES = (1, 2, 5, 10, 30, None)  # None = whole recording
-FEATURES = T.VARIANTS["safe"]  # no t_s / t_frac / t_left / rec_dur
+# V3's exact 134 features (your_model.py has more features since V4)
+FEATURES = __import__("json").loads((T.ROOT / "experiments" / "v3_features.json").read_text())
 
 
 def build(use_cache: bool = True) -> pd.DataFrame:

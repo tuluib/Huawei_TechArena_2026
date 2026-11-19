@@ -2,3 +2,4 @@ data/
 .venv/
 submission.zip
 __pycache__/
+models/

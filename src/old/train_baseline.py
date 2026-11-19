@@ -1,4 +1,11 @@
+"""Old (V1-V3) trainer, kept for reference. It overwrites src/your_model.onnx with a model the current
+your_model.py may not read: restore with `git checkout src/your_model.onnx`.
+"""
+import os
 import pathlib
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # src/
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -27,7 +34,7 @@ def extract_block_features(df_input: pd.DataFrame) -> np.ndarray:
 
 
 def train_and_export():
-    project_root = pathlib.Path(__file__).resolve().parent.parent
+    project_root = pathlib.Path(__file__).resolve().parents[2]
     data_dir = project_root / "data"
     onnx_out_path = project_root / "src" / "your_model.onnx"
 

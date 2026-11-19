@@ -62,6 +62,15 @@ def run_torture_tests_and_package():
     df_spikes.iloc[500:510] = -1e6
     verify_output(df_spikes, model.run(df_spikes), "Test 5: Extreme Artifact Spikes (±1e6)")
 
+    # Test 6: a real recording must be predicted by the model, not by the "Rest" fallback
+    real = pd.read_parquet(pathlib.Path(__file__).resolve().parent.parent / "data" / "STRESS" / "S05.parquet")
+    model.fallbacks = 0
+    out = model.run(real[REQUIRED_COLS])
+    verify_output(real[REQUIRED_COLS], out, "Test 6: Real recording (STRESS/S05)")
+    assert model.fallbacks == 0, "FAIL: run() fell back to 'Rest' on a real recording (feature or ONNX error)!"
+    assert out["Activity"].nunique() > 1, "FAIL: a whole real recording got a single class!"
+    print("  [PASS] Test 6b: no fallback, several classes predicted")
+
     print("\n2. Packaging Submission Zip...")
     src_dir = pathlib.Path(__file__).resolve().parent
     project_root = src_dir.parent

@@ -1,0 +1,28 @@
+{
+  // Terminal > Run Task... (or Ctrl+Shift+P, "Run Task") and pick one. Output appears in the terminal panel.
+  "version": "2.0.0",
+  "options": { "cwd": "${workspaceFolder}/src", "env": { "PYTHONWARNINGS": "ignore" } },
+  "tasks": [
+    { "label": "1. Score the test model (quick, ~2 min)",
+      "type": "process", "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["score.py", "v5_holdout", "--quick"], "problemMatcher": [] },
+    { "label": "2. Score the test model (full, ~5 min)",
+      "type": "process", "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["score.py", "v5_holdout"], "problemMatcher": [] },
+    { "label": "3. Compare: V5 test model vs TULUI (quick)",
+      "type": "process", "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["score.py", "v5_holdout", "TULUI", "--quick"], "problemMatcher": [] },
+    { "label": "4. Train the test model (without holdout people, ~2 min)",
+      "type": "process", "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["train_v5.py", "holdout"], "problemMatcher": [] },
+    { "label": "5. Train the submission model (everyone, ~2 min)",
+      "type": "process", "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["train_v5.py", "all"], "problemMatcher": [] },
+    { "label": "6. Package submission.zip (tests included)",
+      "type": "process", "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["package_submission.py"], "problemMatcher": [] },
+    { "label": "7. Experiment: cross-validation of the current features (~1 min)",
+      "type": "process", "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["experiment.py", "cv", "all+time"], "problemMatcher": [] }
+  ]
+}

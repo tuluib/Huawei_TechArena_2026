@@ -1,4 +1,7 @@
-"""Train the v2 model: cleaned-signal features + gradient-boosted trees, exported to ONNX.
+"""Old (V1-V3) trainer, kept for reference. It overwrites src/your_model.onnx with a model the current
+your_model.py may not read: restore with `git checkout src/your_model.onnx`.
+
+Train the v2 model: cleaned-signal features + gradient-boosted trees, exported to ONNX.
 
     python train_v2.py cv                      # person-grouped cross-validation report
     python train_v2.py export full holdout     # train without the 6 validation people (honest local score)
@@ -26,10 +29,11 @@ from sklearn.metrics import f1_score
 from sklearn.model_selection import GroupKFold
 
 sys.path.append(os.path.dirname(__file__))
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))  # src/
 import your_model as ym
 from eval_harness import VAL_SUBJECTS, map_phase_to_activity
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 DATA = ROOT / "data"
 CACHE = DATA / "_cache" / "v2_features.parquet"
 PROTOCOLS = ["AEROBIC", "ANAEROBIC", "STRESS"]
