@@ -1,5 +1,10 @@
 # Plan to 79+ (written 2026-11-18)
 
+> **Status 2026-11-20:** best leaderboard result is TULUI-fast (74); V5.1 scored 73. The next candidate
+> is TULUI's 145-feature model retrained with shuffle augmentation (`submissions/candidates/TULUI_shuffle_aug.zip`): it won all five T3 holdout seeds by a mean 3.62 quality points and ran faster locally. Its platform score is unknown. New fair-holdout and CV findings, including the limitations of T4
+> as a score predictor, are in [NEXT_MODEL_TO_77.md](NEXT_MODEL_TO_77.md) and [HUAWEI_EVALUATION.md](HUAWEI_EVALUATION.md).
+> The notes below are historical and should not be read as the current submission schedule.
+
 > **Update 2026-11-18 (evening), read first.** Official rules: the validation recordings are new people,
 > one whole 15-35 min recording per run() call, and phases NOT in the training order or durations.
 > Time-since-start / phase-order features fail there and are penalised by the jury; look-ahead (future

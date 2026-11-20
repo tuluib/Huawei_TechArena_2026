@@ -4,6 +4,8 @@
 Words in *italics* are explained in the glossary at the end.
 All numbers were measured on our data on 18 November 2026.
 
+**Current submission status (20 Nov):** the best public score is 74 (`TULUI_fast.zip`). The next quality candidate is `submissions/candidates/TULUI_shuffle_aug.zip`; its holdout results are in [NEXT_MODEL_TO_77.md](NEXT_MODEL_TO_77.md). The historical instructions below that say to upload V5 are no longer current.
+
 ---
 
 ## 1. The task in one paragraph
@@ -112,8 +114,10 @@ The submission is always `your_model.py` (the code for all five steps) + `your_m
 | **V2** | 61 | 138, incl. **time since start** | Gradient boosting, 1,200 trees | everyone | Cleaned signals and context. Learned the timetable, so it failed on the real test. |
 | **V3** | 72 | 134 (V2 without the time features) | Gradient boosting, 1,200 trees | everyone, whole + cut pieces | Robust to how `run()` is called. |
 | **TULUI** | **74** | 145 (V3 + 11 "relative to the person's resting level" features) | Gradient boosting, 1,650 trees (exported with OnnxMLTools) | 29 people | Best upload so far. |
+| **TULUI + shuffle augmentation** | not uploaded | Same 145 TULUI features | LightGBM, 400 trees | all people + reordered, full-length reordered, and same-person session-mixed copies | Holdout comparison: +3.62 T3 quality points averaged over five seeds, plus faster inference; candidate `submissions/candidates/TULUI_shuffle_aug.zip`. |
 | **V4** | 71 | 190, incl. time features | **Two** LightGBM models (2,100 trees): the 2nd reads the 1st's answers over ±3 min | everyone | Learned the protocol's order, so it failed on the real test. |
 | **V5** | not uploaded | 186, **no time features** | LightGBM, 1,200 trees | everyone + **3 shuffled copies** of every recording | Cannot learn the order. Shuffled test: 60.7 quality, against TULUI 55.6 and V3 55.9. |
+| **V5.1** | **73** | 186, no position features | LightGBM, 400 trees | all people + reordered, full-length reordered, and same-person session-mixed copies | Better generated T4 robustness than V5; its local T4 fit predicted ~85 but the leaderboard result was 73. |
 
 ### What the features measure (V3 to V5)
 

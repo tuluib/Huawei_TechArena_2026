@@ -1,47 +1,61 @@
-# Submissions
+# Submission history
 
-Each zip is exactly what was uploaded to Agorize (`your_model.py` + `your_model.onnx` at the root).
+Every zip in this folder was uploaded to Agorize. `candidates/` holds packages that were **not** uploaded.
+All zips have `your_model.py` + `your_model.onnx` at the root (except SHEH, which has them in a subfolder).
+Agorize allows 3 successful submissions per day; the leaderboard shows each team's best score.
 
-| File | Leaderboard | Local harness (holdout people) | What it is |
-|---|---|---|---|
-| `submissionV1.zip` | **68** | 53.9 (quality 38.8, speed 15-17) | Baseline: Random Forest on mean/std of the raw columns per 640 rows. |
-| `submissionV2.zip` | **61** | 82.3 (quality 65.1, speed 17.2) | Cleaned-signal features + gradient boosting, with time-position features. Broke on the hidden test (see below). |
-| `submissionV3.zip` | **72** | 57.0 quality on whole recordings, 45-57 on any input format | V2 made robust to how `run()` is called. Current best. |
-| `V1.2(2nd trial65score).zip` | **65** | T4 36.3 / T3 37.2 (holdout people unknown) | V1-style random forest, 36 features; assumes the first 60 s is rest (fails on shuffled recordings). |
-| `SHEH.zip` | **54** | T4 28.1 / training order 67.4 (very likely saw the holdout people) | 3 tree models (2,710 trees), 163 features; files inside a folder in the zip. Memorises sessions. |
-| `submissionV4.zip` | **71** | 62.3 quality on whole recordings, 47.5-62.3 on any input format; ~1.2× V3's run time | Two-stage LightGBM (stage 2 reads the stage-1 probabilities of the surrounding minutes), position-in-input features, new pulse/skin features. See [../PLAN.md](../PLAN.md). |
+**Best: 75, `TULUI35.zip`** (20 Nov 2026).
 
-Speed scores on the local machine vary by 1-3 points between runs.
+## All uploads (approximate upload order)
 
-## What we learned (V2 -> V3)
+| # | File | Website | What it is | What it taught us |
+|---|---|---|---|---|
+| 1 | `submissionV1.zip` | 68 | Random forest (60 trees) on mean/std of the 6 raw columns per 640 rows. | A very simple model that only looks at the current 10 s holds up well on Huawei's data. |
+| 2 | `V1.2(2nd trial65score).zip` | 65 | V1-style forest, 36 features; normalises by the first 60 s of the recording. | "The first minute is rest" is false in Huawei's recordings. |
+| 3 | `submissionV2.zip` | 61 | Cleaned signals + gradient boosting, **with time-since-start features**. | Timetable features fail: 82 locally, 61 on the website. |
+| 4 | `submissionV3.zip` | 72 | V2 without time features, trained on whole recordings + 1-30 min pieces. | Robust to how `run()` is called. |
+| 5 | `submissionV4.zip` | 71 | Two-stage LightGBM (stage 2 reads stage 1 over ±3 min) + position features. | Best ever locally (62.3) but not on the website: learned the protocol order. |
+| 6 | `TULUI.zip` | 74 | V3 + 11 "relative to the person's resting level" features, median fill, trained on 29 people. | Best until TULUI35. |
+| 7 | `SHEH.zip` | 54 | 3 tree models (2,710 trees), 163 features; files in a subfolder. | Huge capacity memorises sessions: best on training order, worst on mixed sessions and on the website. |
+| 8 | `V5.zip` | 73 | One LightGBM, 186 features, no time features, trained with within-session shuffled copies. | Shuffled-copy training looks great on our shuffled tests, but those tests are spliced the same way. |
+| 9 | `V5.1.zip` | 73 | V5 + full-length and session-mixed shuffled copies. | Local mixed test predicted ~85; website 73. Our spliced tests cannot judge splice-trained models. |
+| 10 | `TULUI_fast.zip` | 74 | TULUI with faster code, **identical predictions** (checked on 107 inputs). | Public runtime 87.81 shown for it. Speed gain did not change the total. |
+| 11 | `V27_dualrate_GRU.zip` (was "Last update result 69 Tului promised") | 69 | Neural network (GRU), 2 s + 10 s feature streams, trained on everyone. | The sequence network did worse than the tree models. |
+| 12 | `TULUI35.zip` | **75** | TULUI's recipe rebuilt with LightGBM (`src/train_tului.py`), trained on **all 35 people**, TULUI_fast code. | 6 more training people: 74 → 75. More data helps. |
 
-The local harness passes one whole recording per `run()` call. The hidden test clearly does not,
-because V2 (82 locally) scored 61 while the length-independent baseline (54 locally) scored 68.
-V2 failed when:
+## Local scores of the uploads
 
-- the input was shorter than 5 minutes: `np.convolve(mode="same")` returns a longer array when the
-  input has fewer windows than the kernel, the feature code crashed, and `run()` silently answered "Rest";
-- several recordings were glued into one input: time going backwards crashed it, and a gap of months
-  created over a million empty windows;
-- the input was a piece of a recording: the "time since start" features no longer meant anything.
+From `src/truth_eval.py` (20 Nov). Quality is out of 80, on the 6 holdout people (S16-S18, f11-f13), using
+copies trained *without* them where available. Speed: 50 runs on the longest recording, cap 1.0 s.
+MIXED = holdout phases from all sessions, random order and lengths: the best (but imperfect) local
+match to the website. Raw table: `experiments/truth_eval_stage0.csv`.
 
-V3 fixes the crash, splits the input wherever time goes backwards or jumps more than 5 minutes,
-drops the time-position features and is trained on recordings cut into 1, 2, 5, 10 and 30-minute
-pieces as well as whole ones. Quality points (of 80) on the 6 holdout people, model trained without them:
+| Upload | Website | Fair copy? | MIXED | Shuffled in session | Training order |
+|---|---|---|---|---|---|
+| TULUI / TULUI_fast | 74 | yes | 39.5 | 55.6 | 58.9 |
+| TULUI35 recipe (trained without holdout) | 75 | yes | 40.4 | 54.7 | 56.9 |
+| V5 | 73 | yes | 41.9 | 60.5 | 55.4 |
+| V5.1 | 73 | yes | 52.6* | 60.8* | 53.2 |
+| V3 | 72 | yes | 40.5 | 55.9 | 57.0 |
+| V4 | 71 | yes | 32.6 | 49.2 | 62.3 |
+| V1 | 68 | yes | 39.1 | 39.2 | 38.7 |
+| V1.2 | 65 | unknown | 36.3 | 37.2 | 41.5 |
+| V2 | 61 | yes | 29.3 | 43.8 | 65.1 |
+| SHEH | 54 | no (saw holdout) | 28.1 | 52.8 | 67.4 |
 
-| How `run()` is called | V1 | V2 | V3 |
-|---|---|---|---|
-| Whole recordings | 38.7 | 65.1 | 57.0 |
-| 10-minute pieces | 39.2 | 37.2 | 51.1 |
-| 2-minute pieces | 39.9 | 15.6 | 49.0 |
-| One person's recordings joined | 38.8 | 41.5 | 45.2 |
-| Everything glued into one input | 38.5 | crash / "Rest" | 57.0 |
+\* Inflated: trained on copies spliced like these tests. Rank correlation with the website: MIXED +0.77,
+shuffled +0.65, training order **−0.21** (all 10). The TULUI35 *upload* itself was trained on the holdout
+people, so only its holdout-trained copy is scored here.
 
 ## Candidates (not uploaded)
 
-| File | Shuffled test (like official) | What it is |
+| File | Evidence | What it is |
 |---|---|---|
-| `candidates/TULUI.zip` | 55.6 quality, 72.6 total | **Uploaded: 74.** V3 + 11 person-normalised features, trained on 29 people. |
-| `candidates/V5.zip` | T4 41.5 / T3 60.7 | One LightGBM, no position features, trained with within-session shuffled copies. Superseded by V5.1. |
-| `candidates/V5.1.zip` | T4 52.6 / T3 60.8 | **Uploaded 19 Nov: 73.** V5 + full-length and session-mixed shuffled copies. Local T4 overestimated it by ~10 (trained on copies spliced like the test). |
-| `candidates/TULUI_fast.zip` | identical predictions to TULUI (checked on 107 inputs); 24 % faster (58.2 → 44.0 ms, ≈ +1 speed point on a laptop) | TULUI (74) with faster code only: time conversion, output table, pulse spectrum placement, artifact counting. Same model file. **Recommended next upload.** |
+| `candidates/TULUI_shuffle_aug.zip` | Holdout comparison: TULUI baseline T3 mean 54.03 vs augmented 57.65 across five seeds (+3.62/80, 5/5 wins); quick T2 57.5 vs 56.4, T4 48.7 vs 36.0. Paired timing: TULUI-fast 55.1 ms, candidate 52.8 ms. Contract passed on a 130,609-row recording. | TULUI's 145 features and TULUI-fast code with V5.1/V7 shuffle augmentation and a 400-tree LightGBM, trained on 29 people. **Caution:** V5/V5.1 show that shuffle-trained models look better on our shuffled tests than on the website. |
+| `candidates/V7_interactions.zip` | Holdout-trained variant: T3 61.5 vs V5.1 60.8; mean +0.52 over five shuffle seeds; speed 13.8 vs 13.6. | V5.1's augmentation recipe + 11 TULUI-style cross-sensor interactions. Controlled quality probe. |
+
+## Rules for this folder
+
+1. Before uploading, score the **holdout-trained** copy with `python score.py NAME`; never trust the local score of a model trained on everyone.
+2. After uploading, move the zip from `candidates/` to here, add a row above (website score, runtime if shown, what changed) and commit.
+3. Change one thing per upload, so each score answers one question.

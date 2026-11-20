@@ -54,6 +54,11 @@ WINDOW_FEATURES = [
     "eda_mean", "eda_slope", "eda_tonic", "eda_phasic_std",
     "temp_mean",
 ]
+PHYSIO_FEATURES = [
+    "eda_phasic_ratio", "scr_per_hr", "hr_temp_div",
+    "hr_above_floor", "eda_above_floor", "bvp_rms_above_floor", "hrv_drop_from_peak",
+    "hr_range_norm", "eda_range_norm", "eda_rel_slope", "hr_motion_gap",
+]
 CONTEXT_FEATURES = ["hrv_rmssd_60s", "hrv_sdnn_60s", "scr_rate_60s", "temp_slope_60s", "eda_slope_60s",
                     "hr_mean_60s"]
 RELATIVE_BASES = ["hr_mean", "bvp_pulse_bpm", "eda_tonic", "temp_mean", "bvp_log_rms", "ibi_mean",
@@ -78,7 +83,7 @@ TREND_BASES = ["hr_mean", "eda_tonic", "scr_rate_60s", "temp_mean", "bvp_log_rms
                "bvp_periodicity", "ibi_mean"]
 TREND_FEATURES = [f"{b}_{s}" for b in TREND_BASES for s in ("d1m", "d3m", "vs_past3m", "vs_fut3m")]
 REC2_FEATURES = [f"rec_{b}_q{q}" for b in ("bvp_periodicity", "bvp_vhf", "scr_rate_60s") for q in (10, 50, 90)]
-ALL_FEATURES = (WINDOW_FEATURES + CONTEXT_FEATURES + RELATIVE_FEATURES + LONG_FEATURES
+ALL_FEATURES = (WINDOW_FEATURES + PHYSIO_FEATURES + CONTEXT_FEATURES + RELATIVE_FEATURES + LONG_FEATURES
                 + REC_FEATURES + TIME_FEATURES + LAG_FEATURES + EXTRA_FEATURES + TREND_FEATURES + REC2_FEATURES)
 INPUT_COLS = ["BVP", "EDA", "HR", "IBI_dt", "IBI_duration", "Temperature"]
 
@@ -364,8 +369,26 @@ def compute_features(df: pd.DataFrame):
         f["eda_slope_60s"] = np.full(n, np.nan)
     f["hr_mean_60s"] = _nan_roll_mean(f["hr_mean"], CONTEXT_WINDOWS)
 
+    # Cross-sensor response features: EDA activity relative to tonic level, cardiac response
+    # relative to per-input resting floors, and heart-rate elevation not explained by BVP noise.
+    hr_q15, hr_q85 = _qs(f["hr_mean"], [15, 85])
+    eda_q15, eda_q85 = _qs(f["eda_tonic"], [15, 85])
+    bvp_q15 = _qs(f["bvp_log_rms"], [15])[0]
+    hrv_q85 = _qs(f["hrv_rmssd_60s"], [85])[0]
+    f["eda_phasic_ratio"] = f["eda_phasic_std"] / (np.maximum(f["eda_tonic"], 0.0) + 0.05)
+    f["scr_per_hr"] = f["scr_rate_60s"] / np.maximum(f["hr_mean_60s"], 40.0)
+    f["hr_above_floor"] = f["hr_mean"] - hr_q15
+    f["eda_above_floor"] = f["eda_tonic"] - eda_q15
+    f["bvp_rms_above_floor"] = f["bvp_log_rms"] - bvp_q15
+    f["hrv_drop_from_peak"] = hrv_q85 - f["hrv_rmssd_60s"]
+    f["hr_range_norm"] = f["hr_above_floor"] / (np.maximum(hr_q85 - hr_q15, 0.0) + 2.0)
+    f["eda_range_norm"] = f["eda_above_floor"] / (np.maximum(eda_q85 - eda_q15, 0.0) + 0.05)
+    f["eda_rel_slope"] = f["eda_slope_60s"] / (np.maximum(f["eda_tonic"], 0.0) + 0.05)
+
     for b in RELATIVE_BASES:
         f[f"{b}_rel"], f[f"{b}_z"], f[f"{b}_local"] = _relative(f[b])
+    f["hr_temp_div"] = f["hr_mean_local"] - 10.0 * f["temp_slope_60s"]
+    f["hr_motion_gap"] = f["hr_above_floor"] - 20.0 * f["bvp_rms_above_floor"]
     for b in LONG_BASES:
         for m in (2, 5):
             f[f"{b}_{m}m"] = _nan_roll_mean(f[b], 6 * m)

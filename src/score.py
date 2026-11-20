@@ -9,12 +9,11 @@
     python score.py --quick                           # fewer shuffled recordings (faster)
 
 Quality = 80 x macro-F1 over 10-second windows (Rest / Activity / Stress), pooled over all recordings.
-Main number: MIXED recordings: the holdout people's phases from all their sessions, cut to random
-lengths and joined in random order (shuffled_recordings, within=False). Of the local tests we tried, it
-predicts the leaderboard best: rank correlation +0.75 over 7 uploads, LB ~ 1.03 x (quality + speed) + 14,
-typical error ~4 points (HUAWEI_EVALUATION.md, 2026-11-19). "shuffled within session" and "training
-order" are shown for comparison; training order ranks the uploads almost in REVERSE (-0.43).
-Speed = 20 x (1 - time per call / 0.3 s) on one 34-minute recording, single core.
+Primary diagnostic: T3 within-session recordings, with phases reordered and block lengths varied.
+T2 (reordered full blocks) and T4 (same-person cross-session mixtures) are also reported. T4 is a
+robustness stress test, not the headline score estimate: the V5.1/TULUI leaderboard ordering directly
+contradicts the large T4 gap. No local variant has enough evidence to predict the hidden score reliably.
+Speed = 20 x (1 - mean time per call / 0.3 s) over 50 calls on one 34-minute recording, single core.
 
 The score is only honest for a model trained WITHOUT the holdout people
 (S16, S17, S18, f11, f12, f13), e.g. after `python train_v4.py holdout`. A model trained on everyone
@@ -27,6 +26,8 @@ import sys
 import warnings
 
 os.environ["OMP_NUM_THREADS"] = "1"  # the grader uses a single core
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 warnings.simplefilter("ignore")
 
 import importlib.util
@@ -77,6 +78,26 @@ def model_info(model) -> dict:
         return json.loads(model.session.get_modelmeta().custom_metadata_map["eh_config"])
     except Exception:
         return {}
+
+
+def model_feature_summary(info: dict) -> str:
+    """Report feature counts for both tabular and dual-rate sequence models."""
+    features = info.get("features")
+    if features:
+        return f"{len(features)} features"
+    n2 = len(info.get("feats_2s", []))
+    n10 = len(info.get("feats_10s", []))
+    if n2 or n10:
+        return f"{n2 + n10} features ({n2} @ 2s + {n10} @ 10s)"
+    return "feature count unknown"
+
+
+def model_arch_summary(info: dict) -> str:
+    if info.get("architecture"):
+        return str(info["architecture"])
+    if info.get("feats_2s") and info.get("feats_10s"):
+        return "dual-rate sequence"
+    return "two-stage" if info.get("two_stage", False) else "single-stage"
 
 
 def holdout_recordings():
@@ -159,7 +180,7 @@ def quality(model, recs, minutes=None):
     return float(f1.mean()), f1
 
 
-def time_per_call(model, df, runs=30) -> float:
+def time_per_call(model, df, runs=50) -> float:
     model.run(df)  # warm-up
     ts = []
     for _ in range(runs):
@@ -189,9 +210,13 @@ def main(args):
     quick = "--quick" in args
     paths = [find(a) for a in args if not a.startswith("--")] or [SRC]
     recs = holdout_recordings()
-    tests = [("MIXED (best match to leaderboard)", shuffled_recordings(recs, per_person=2 if quick else 4, within=False)),
-             ("shuffled within session", shuffled_recordings(recs, per_person=1 if quick else 2, within=True)),
-             ("training order (old test)", recs)]
+    tests = [("T3 shuffled within session (primary)",
+              shuffled_recordings(recs, per_person=2 if quick else 4, within=True)),
+             ("T2 reordered full phase blocks",
+              shuffled_recordings(recs, per_person=1 if quick else 2, within=True, keep=(1.0, 1.0))),
+             ("T4 mixed sessions (stress test)",
+              shuffled_recordings(recs, per_person=1 if quick else 2, within=False)),
+             ("training order (reference)", recs)]
     speed_df = pd.read_parquet(DATA / SPEED_FILE[0] / f"{SPEED_FILE[1]}.parquet")[REQUIRED_INPUT_COLS]
 
     rows = []
@@ -200,8 +225,8 @@ def main(args):
         model = load_model(path)
         info = model_info(model)
         print(f"\n{name}")
-        print(f"  trained on: {info.get('trained_on', 'unknown')}, {len(info.get('features', []))} features, "
-              f"two-stage: {info.get('two_stage', False)}")
+        print(f"  trained on: {info.get('trained_on', 'unknown')}, {model_feature_summary(info)}, "
+              f"architecture: {model_arch_summary(info)}")
         if info.get("trained_on") != "holdout":
             print("  WARNING: not trained with `holdout`: it has seen these people, quality is inflated.")
         q = {}
@@ -214,16 +239,16 @@ def main(args):
         speed = max(0.0, (1 - sec / 0.3) * 20)
         total = 80 * q[tests[0][0]][0] + speed
         print(f"  {'speed':34s} {speed:5.1f} / 20   ({1000 * sec:.1f} ms per call)")
-        print(f"  TOTAL (MIXED quality + speed)      {total:5.1f} / 100")
+        print(f"  T3 DIAGNOSTIC TOTAL (T3 quality + speed) {total:5.1f} / 100")
         rows.append((name, q, speed, total))
 
     if len(rows) > 1:
         print("\nSide by side:")
-        print(f"  {'model':28s}{'MIXED':>8s}{'shuffled':>10s}{'train order':>13s}{'speed':>8s}{'TOTAL':>8s}")
+        print(f"  {'model':28s}{'T3':>8s}{'T2':>8s}{'T4':>8s}{'train':>8s}{'speed':>8s}{'T3+spd':>9s}")
         for name, q, speed, total in rows:
-            print(f"  {name[:28]:28s}{80 * q[tests[0][0]][0]:8.1f}{80 * q[tests[1][0]][0]:10.1f}"
-                  f"{80 * q[tests[2][0]][0]:13.1f}{speed:8.1f}{total:8.1f}")
-        print("  (TOTAL = MIXED quality + speed; speed varies 1-3 points between runs on a laptop)")
+            print(f"  {name[:28]:28s}{80*q[tests[0][0]][0]:8.1f}{80*q[tests[1][0]][0]:8.1f}"
+                  f"{80*q[tests[2][0]][0]:8.1f}{80*q[tests[3][0]][0]:8.1f}{speed:8.1f}{total:9.1f}")
+        print("  (T3+speed is a local diagnostic only; leaderboard score is the ground truth.)")
 
 
 if __name__ == "__main__":
